@@ -1,0 +1,1 @@
+export function Slider({value,onValueChange,...props}:{value:number[];onValueChange:(value:number[])=>void;min:number;max:number;step:number;"aria-labelledby":string}){return <input {...props} className="roi-slider" type="range" value={value[0]} onChange={e=>onValueChange([Number(e.target.value)])}/>;}
