@@ -1,6 +1,6 @@
 (()=>{
  const assets=new URL('.',document.currentScript?.src||location.href);
- const greeting={role:'assistant',content:'Hi! I can help you schedule an appointment. What would you like to book?'};
+ const greeting={role:'assistant',content:'Hi there! Want to chat about how AI could help your business? I can help you book a free 20-minute consultation.'};
  const key='scheduling-chat-v1';
  class SchedulingChat extends HTMLElement{
   constructor(){super();this.attachShadow({mode:'open'});this.busy=false;this.pending=null;this.session={sessionId:crypto.randomUUID(),messages:[greeting],updatedAt:Date.now()};}
