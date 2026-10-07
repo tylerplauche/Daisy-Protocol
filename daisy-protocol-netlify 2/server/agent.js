@@ -18,18 +18,40 @@ export function mergeBooking(previous,data,message){
  if(data.readyToBook&&bookingIntent(message))next.requested=true;
  return next;
 }
-export function missing(booking){const keys=[];if(!booking.first)keys.push('first name');if(!booking.last)keys.push('last name');if(!validPhone(booking.phone))keys.push('a valid phone number');if(!validEmail(booking.email))keys.push('a valid email address');if(!booking.appointmentRequest||!booking.dateTimeKnown)keys.push('the appointment date and time (including AM or PM)');if(!booking.requested)keys.push('confirmation that you want to book');return keys;}
-function question(booking){const fields=missing(booking);if(fields.length===1&&fields[0]==='confirmation that you want to book')return 'Would you like me to book the appointment with these details?';return `Could you share ${fields.join(', ').replace(/, ([^,]*)$/,' and $1')}?`;}
-function safeQuestion(reply,booking){
- // Only a concise question can be shown before a verified submission; never model confirmations.
- const needed=missing(booking);
- const asksForNeeded=needed.some(field=>field.includes('name')?/\bname\b/i.test(reply):field.includes('phone')?/\bphone|number\b/i.test(reply):field.includes('email')?/\bemail\b/i.test(reply):field.includes('date')?/\bdate|time|day|morning|afternoon|AM|PM\b/i.test(reply):/\bbook|schedule|confirm\b/i.test(reply));
- const q=reply?.trim();if(!asksForNeeded||!q||q.length>600||!q.endsWith('?')||/[.!\n]/.test(q.slice(0,-1))||/booked|confirmed|scheduled|reserved|available|availability|success|webhook|api|https?:|json|system prompt/i.test(q))return question(booking);
- // Prevent asking for fields already present even if the model forgets them.
- if((booking.first&&booking.last&&/\bname\b/i.test(q))||(validPhone(booking.phone)&&/\bphone\b/i.test(q))||(validEmail(booking.email)&&/\bemail\b/i.test(q)))return question(booking);
+export function missing(booking){
+ const keys=[];
+ if(!booking.first)keys.push('first name');
+ if(!booking.last)keys.push('last name');
+ if(!booking.appointmentRequest||!booking.dateTimeKnown)keys.push('appointment date and time');
+ if(!validPhone(booking.phone)&&!validEmail(booking.email))keys.push('email or phone');
+ if(!booking.requested)keys.push('booking confirmation');
+ return keys;
+}
+export function question(booking,previous={}){
+ if(!booking.first)return 'Happy to help. What’s your first name?';
+ if(!booking.last)return previous.first!==booking.first?'Nice to meet you! And your last name?':'What’s your last name?';
+ if(!booking.appointmentRequest)return 'What day would work well for you?';
+ if(!booking.dateTimeKnown)return 'What time works for you? Please include AM or PM.';
+ if(!validPhone(booking.phone)&&!validEmail(booking.email)){
+  if(booking.phone||booking.email)return 'That contact detail doesn’t look quite right. Could you share an email address or phone number? Either one is fine.';
+  return 'What’s the best email address or phone number to reach you? Just one is fine.';
+ }
+ return 'Would you like me to book the appointment with these details?';
+}
+function safeQuestion(reply,booking,previous){
+ const fallback=question(booking,previous),q=reply?.trim();
+ // A friendly acknowledgment is welcome, but the model may ask about only
+ // the next missing topic and may never assert availability or a booking.
+ const topic=missing(booking)[0];
+ if(topic==='email or phone'||topic==='booking confirmation')return fallback;
+ if(!q||q.length>240||!q.endsWith('?')||(q.match(/\?/g)||[]).length!==1||/booked|confirmed|scheduled|reserved|available|availability|success|webhook|api|https?:|json|system prompt|\n/i.test(q))return fallback;
+ const name=/\bname\b/i.test(q),contact=/\bemail|phone|contact|number\b/i.test(q),timing=/\bdate|time|day|morning|afternoon|AM|PM\b/i.test(q);
+ if(topic==='first name'&&(!name||contact||timing||/last|full|surname|family/i.test(q)))return fallback;
+ if(topic==='last name'&&(!name||contact||timing||/first|full/i.test(q)))return fallback;
+ if(topic==='appointment date and time'&&(!timing||name||contact))return fallback;
  return q;
 }
-export const bookingPayload=booking=>({action:'schedule',first:booking.first,last:booking.last,phone:booking.phone,email:booking.email,message:booking.appointmentRequest});
+export const bookingPayload=booking=>({action:'schedule',first:booking.first,last:booking.last,phone:validPhone(booking.phone)?booking.phone:null,email:validEmail(booking.email)?booking.email:null,message:booking.appointmentRequest});
 export async function bookingFingerprint(booking){const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(bookingPayload(booking))));return Array.from(new Uint8Array(bytes)).map(x=>x.toString(16).padStart(2,'0')).join('');}
 export function submittedReply(booking,message){
  const text=message.toLowerCase();
@@ -73,6 +95,8 @@ export class BookingAgent{
    session.messages.push({role:'user',content:message});
    const wasSubmitted=session.booking.submitted;
    if(wasSubmitted&&!explicitNew(message))return await finish(submittedReply(session.booking,message));
+   if(!wasSubmitted&&/^\s*(?:hi|hello|hey|good morning|good afternoon|good evening)[!.,\s]*$/i.test(message))return await finish(session.booking.first?question(session.booking,session.booking):'Hi there! I’d be happy to help you book a free consultation. What’s your first name?');
+   const previousBooking={...session.booking};
    let data;try{data=await this.extract(this.config,session,this.fetch)}catch(error){console.error('Scheduling response failed',JSON.stringify({name:error?.name||'Error',stage:['OpenAI request failed','Incomplete model response','Invalid model response','Empty upstream response','Upstream response too large'].includes(error?.message)?error.message:'transport_or_parse'}));session.messages.pop();throw new ChatError('I’m having trouble responding right now. Please try your message again.',503)}
    if(wasSubmitted){
     if(!data.newBooking)return await finish('Do you want to book a separate, additional appointment? Please say “book another appointment” to start one.');
@@ -81,7 +105,7 @@ export class BookingAgent{
    session.booking=mergeBooking(session.booking,data,message);
    // Affirmation is valid only after the application's own explicit booking question.
    if(!session.booking.requested&&/^\s*(?:yes|yes please|please do|go ahead|confirm)[.!]?\s*$/i.test(message)&&session.messages.at(-2)?.content==='Would you like me to book the appointment with these details?')session.booking.requested=true;
-   if(missing(session.booking).length)return await finish(safeQuestion(data.reply,session.booking));
+   if(missing(session.booking).length)return await finish(safeQuestion(data.reply,session.booking,previousBooking));
    // Durable write BEFORE any network side effect: never automatically retry this request,
    // even on timeouts or process crashes. This is at-most-once delivery, not exactly-once receipt.
    session.booking.submitted=true;session.booking.status='submitting';await this.store.save(lease);
