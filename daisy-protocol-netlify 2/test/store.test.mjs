@@ -79,3 +79,39 @@ test('multi-field model demands fall back to only the next missing detail',async
  const reply=await agent.chat({sessionId:crypto.randomUUID(),requestId:crypto.randomUUID(),message:'Test'});
  assert.equal(reply.message,'Nice to meet you! And your last name?');
 });
+
+test('PM alone cannot complete the appointment time or trigger a booking',async()=>{
+ const blobs=new FakeBlobs(),store=new SessionStore(blobs);const id=crypto.randomUUID();const lease=await store.acquire(id);
+ Object.assign(lease.state.booking,{first:'Test',last:'Visitor',phone:'8015550100',appointmentRequest:'tomorrow afternoon',requested:true,dateTimeKnown:false});await store.save(lease);await store.release(lease);
+ let calls=0;const agent=new BookingAgent({apiKey:'mock',webhookUrl:'https://example.com/mock'},store,{extractFn:async()=>({first:null,last:null,phone:null,email:null,appointmentRequest:'tomorrow PM',evidence:{appointmentRequest:'pm'},dateTimeKnown:true,readyToBook:true,reply:'What email can I use?'}),fetchImpl:async()=>{calls++;return Response.json({success:true})}});
+ const reply=await agent.chat({sessionId:id,requestId:crypto.randomUUID(),message:'pm'});
+ assert.equal(calls,0);assert.match(reply.message,/What time/);assert.doesNotMatch(reply.message,/email/);
+});
+test('calendar event time is shown and status checks use only the read-only action',async()=>{
+ const {appointmentReply}=await import('../server/agent.js');
+ const store=new SessionStore(new FakeBlobs());const sessionId=crypto.randomUUID();const lease=await store.acquire(sessionId);
+ Object.assign(lease.state.booking,{first:'Test',last:'Visitor',phone:'8015550100',appointmentRequest:'Friday 2 PM',submitted:true,status:'submitted',bookingReference:crypto.randomUUID()});await store.save(lease);await store.release(lease);
+ const appointment={id:'event123',start:'2026-10-09T14:00:00-06:00',end:'2026-10-09T14:20:00-06:00',timeZone:'America/Denver'};const actions=[];
+ const agent=new BookingAgent({apiKey:'mock',webhookUrl:'https://example.com/mock'},store,{extractFn:async()=>{throw new Error('No LLM needed for verification')},fetchImpl:async(url,init)=>{actions.push(JSON.parse(init.body));return Response.json({success:true,status:'confirmed',appointment})}});
+ const reply=await agent.chat({sessionId,requestId:crypto.randomUUID(),message:'Can you check if the appointment is there and what time?'});
+ assert.equal(reply.message,appointmentReply(appointment));assert.match(reply.message,/2:00 PM/);assert.equal(actions[0].action,'status');
+ await agent.chat({sessionId,requestId:crypto.randomUUID(),message:'What time again?'});assert.equal(actions[1].eventId,'event123');assert.ok(actions.every(p=>p.action==='status'));
+});
+test('success prose without a calendar event cannot invent a time or confirm existence',async()=>{
+ const {submit}=await import('../server/agent.js');
+ const result=await submit({webhookUrl:'https://example.com/mock'},{first:'Test',last:'Visitor',phone:'8015550100',appointmentRequest:'Friday 2 PM'},async()=>Response.json({success:true,output:'Confirmed for 3 PM!'}));
+ assert.equal(result.confirmed,false);assert.doesNotMatch(result.message,/3 PM/);
+});
+test('read-only lookup failure never rebooks or repeats a stale confirmation',async()=>{
+ const {checkAppointment}=await import('../server/agent.js');let calls=0;
+ const result=await checkAppointment({webhookUrl:'https://example.com/mock'},{first:'Test',last:'Visitor',email:'test@example.com',appointment:{id:'old',start:'2026-10-09T14:00:00-06:00'}},async(url,init)=>{calls++;assert.equal(JSON.parse(init.body).action,'status');return Response.json({success:false,status:'not_found'})});
+ assert.equal(calls,1);assert.equal(result.appointment,null);assert.match(result.message,/couldn’t verify/);
+});
+
+test('multiple verified events are listed and an explicit selection is checked by ID',async()=>{
+ const blobs=new FakeBlobs(),store=new SessionStore(blobs),sessionId=crypto.randomUUID();const lease=await store.acquire(sessionId);Object.assign(lease.state.booking,{first:'Test',last:'Visitor',phone:'8015550100',submitted:true,status:'submitted'});await store.save(lease);await store.release(lease);
+ const appointments=[{id:'a',start:'2026-10-08T14:00:00-06:00',end:'2026-10-08T14:20:00-06:00',timeZone:'America/Denver'},{id:'b',start:'2026-10-09T15:00:00-06:00',end:'2026-10-09T15:20:00-06:00',timeZone:'America/Denver'}];const sent=[];
+ const agent=new BookingAgent({apiKey:'mock',webhookUrl:'https://example.com/mock'},store,{fetchImpl:async(url,init)=>{const b=JSON.parse(init.body);sent.push(b);return Response.json(b.eventId?{success:true,status:'confirmed',appointment:appointments[1]}:{success:false,status:'ambiguous',appointments,matchCount:2})}});
+ const list=await agent.chat({sessionId,requestId:crypto.randomUUID(),message:'Check my appointment'});assert.match(list.message,/2:00 PM/);assert.match(list.message,/3:00 PM/);
+ const chosen=await agent.chat({sessionId,requestId:crypto.randomUUID(),message:'2'});assert.match(chosen.message,/confirmed/);assert.equal(sent[1].eventId,'b');assert.ok(sent.every(b=>b.action==='status'));
+});
