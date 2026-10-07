@@ -50,3 +50,32 @@ test('n8n immediate acknowledgment and transport retries survive function instan
  const second=await new BookingAgent(config,new SessionStore(blobs),options).chat(input);assert.deepEqual(second,first);assert.equal(calls,1);
  const thanks=await new BookingAgent(config,new SessionStore(blobs),options).chat({...input,requestId:crypto.randomUUID(),message:'Thanks'});assert.match(thanks.message,/welcome/);assert.equal(calls,1);
 });
+
+test('hello gets a warm single question without a model call or a booking',async()=>{
+ const agent=new BookingAgent({apiKey:'mock',webhookUrl:'https://example.com/mock'},new SessionStore(new FakeBlobs()),{extractFn:async()=>{throw new Error('Greeting should not call model')}});
+ const reply=await agent.chat({sessionId:crypto.randomUUID(),requestId:crypto.randomUUID(),message:'hello'});
+ assert.match(reply.message,/Hi there!/);assert.match(reply.message,/first name/);assert.doesNotMatch(reply.message,/last name|phone|email|confirmation/);assert.equal((reply.message.match(/\?/g)||[]).length,1);
+});
+for(const contact of [{email:'test@example.com',phone:null},{email:null,phone:'8015550100'},{email:'test@example.com',phone:'bad'}]){
+ test('one valid contact is enough: '+JSON.stringify(contact),async()=>{
+  const fields={first:'Test',last:'Visitor',appointmentRequest:'Friday at 2 PM',...contact};let payload;
+  const agent=new BookingAgent({apiKey:'mock',webhookUrl:'https://example.com/mock'},new SessionStore(new FakeBlobs()),{
+   extractFn:async()=>({...fields,evidence:{...fields},dateTimeKnown:true,readyToBook:true,newBooking:false,reply:'Please share both phone and email?'}),
+   fetchImpl:async(url,init)=>{payload=JSON.parse(init.body);return Response.json({message:'Workflow was started'})}
+  });
+  const reply=await agent.chat({sessionId:crypto.randomUUID(),requestId:crypto.randomUUID(),message:'Book Test Visitor Friday at 2 PM '+Object.values(contact).filter(Boolean).join(' ')});
+  assert.match(reply.message,/submitted/);assert.equal(payload.email,contact.email);assert.equal(payload.phone,contact.phone==='bad'?null:contact.phone);
+ });
+}
+test('missing both contacts asks for a choice, not both; invalid fields do not submit',async()=>{
+ let submitted=0;const fields={first:'Test',last:'Visitor',phone:'123',email:'bad',appointmentRequest:'Friday at 2 PM'};
+ const agent=new BookingAgent({apiKey:'mock',webhookUrl:'https://example.com/mock'},new SessionStore(new FakeBlobs()),{extractFn:async()=>({...fields,evidence:{...fields},dateTimeKnown:true,readyToBook:true,newBooking:false,reply:'Give me phone and email?'}),fetchImpl:async()=>{submitted++;return Response.json({success:true})}});
+ const reply=await agent.chat({sessionId:crypto.randomUUID(),requestId:crypto.randomUUID(),message:'Book Test Visitor Friday at 2 PM 123 bad'});
+ assert.equal(submitted,0);assert.match(reply.message,/email address or phone number/);assert.match(reply.message,/Either one is fine/);
+});
+test('multi-field model demands fall back to only the next missing detail',async()=>{
+ const fields={first:'Test',last:null,phone:null,email:null,appointmentRequest:null};
+ const agent=new BookingAgent({apiKey:'mock',webhookUrl:'https://example.com/mock'},new SessionStore(new FakeBlobs()),{extractFn:async()=>({...fields,evidence:{...fields},dateTimeKnown:false,readyToBook:false,newBooking:false,reply:'Could you share last name, phone, email and date?'}),fetchImpl:async()=>{throw new Error('Not ready')}});
+ const reply=await agent.chat({sessionId:crypto.randomUUID(),requestId:crypto.randomUUID(),message:'Test'});
+ assert.equal(reply.message,'Nice to meet you! And your last name?');
+});
