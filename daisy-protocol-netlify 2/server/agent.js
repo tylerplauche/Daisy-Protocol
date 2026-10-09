@@ -68,11 +68,13 @@ export class BookingAgent {
     // Persist the outcome before asking the model to explain it, so model failures are retry-safe.
     await this.store.save(lease);
    }else if(booking.submitted){
-    context.calendar={status:booking.appointment?'previously_confirmed':booking.status,appointment:booking.appointment||null,explanation:'Already submitted. Do not send again. A fresh status check is available on request.'};
+    context.calendar={status:booking.appointment?'previously_confirmed':booking.status,appointment:booking.appointment||null,explanation:'Your earlier request is still on record. I haven’t sent it again. You can ask me to check its current calendar status.'};
    }
    context.submitted=booking.submitted;
    const response=await model(context);
-   return await finish(response.reply);
+   // Calendar confirmations are rendered from verified event data, never model prose.
+   // This exception is limited to tool outcomes; ordinary conversation remains model-generated.
+   return await finish(context.calendar?.explanation && ['confirmed','ambiguous','not_found','pending','unknown'].includes(context.calendar.status) ? context.calendar.explanation : response.reply);
   }finally{await this.store.release(lease)}
  }
 }
