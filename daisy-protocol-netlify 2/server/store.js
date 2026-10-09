@@ -1,8 +1,8 @@
-const RETENTION=7*86400000;
-export const initialState=()=>({messages:[],booking:{first:null,last:null,phone:null,email:null,appointmentRequest:null,dateTimeKnown:false,requested:false,submitted:false,status:'collecting'},receipts:{}});
+import {sessionTimeoutMs} from './business.js';
+export const initialState=()=>({lastActivityAt:Date.now(),intent:'general_chat',messages:[],booking:{first:null,last:null,phone:null,email:null,appointmentRequest:null,dateTimeKnown:false,requested:false,submitted:false,status:'collecting'},receipts:{}});
 // Strong reads plus conditional writes protect against concurrent function instances.
 export class SessionStore {
- constructor(blobs){this.blobs=blobs;}
+ constructor(blobs,{timeoutMs=sessionTimeoutMs()}={}){this.blobs=blobs;this.timeoutMs=timeoutMs;}
  async read(key){return this.blobs.getWithMetadata(key,{type:'json',consistency:'strong'});}
  async write(key,data,previous){return this.blobs.setJSON(key,data,previous?{onlyIfMatch:previous.etag}:{onlyIfNew:true});}
  async rate(key,limit,window=60000){
@@ -20,16 +20,18 @@ export class SessionStore {
   for(let attempt=0;attempt<4;attempt++){
    const now=Date.now();const previous=await this.read(key);
    if(previous?.data.lockUntil>now)return null;
-   const state=previous?.data.expires>now?previous.data.state:initialState();
-   const token=crypto.randomUUID();const record={state,token,lockUntil:now+300000,expires:now+RETENTION};
+   // Expire by user activity, not refreshes, reads, or server responses.
+   const expired=!!previous && (!previous.data.state || now-(previous.data.state.lastActivityAt||0)>=this.timeoutMs || previous.data.expires<=now);
+   const state=expired?initialState():previous?.data.state||initialState();
+   const token=crypto.randomUUID();const record={state,token,lockUntil:now+300000,expires:now+this.timeoutMs};
    const result=await this.write(key,record,previous);
-   if(result.modified)return {id,key,token,etag:result.etag,state:structuredClone(state),record:structuredClone(record)};
+   if(result.modified)return {id,key,token,expired,etag:result.etag,state:structuredClone(state),record:structuredClone(record)};
   }
   return null;
  }
  async save(lease){
   if(lease.record.lockUntil<=Date.now())throw new Error('Session lease expired');
-  const record={...lease.record,state:structuredClone(lease.state),expires:Date.now()+RETENTION};
+  const record={...lease.record,state:structuredClone(lease.state),expires:lease.state.lastActivityAt+this.timeoutMs};
   const result=await this.blobs.setJSON(lease.key,record,{onlyIfMatch:lease.etag});
   if(!result.modified)throw new Error('Session lease lost');
   lease.etag=result.etag;lease.record=record;

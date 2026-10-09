@@ -5,6 +5,7 @@ async function body(req){const reader=req.body?.getReader();if(!reader)throw new
 export async function handle(req,{config,store,ip='local',agent=new BookingAgent(config,store)}){
  const url=new URL(req.url);if(url.pathname==='/api/health'&&req.method==='GET')return json({ok:true});
  if(url.pathname!=='/api/chat')return json({error:'Not found.'},404);
+ if(req.method==='GET')return json({sessionTimeoutMs:config.sessionTimeoutMs||1800000});
  if(req.method!=='POST')return json({error:'Use POST /api/chat.'},405);
  if(req.headers.get('origin')&&req.headers.get('origin')!==url.origin)return json({error:'Please use the chat on this website.'},403);
  if(req.headers.get('content-type')?.split(';')[0].trim().toLowerCase()!=='application/json')return json({error:'Send JSON.'},415);
@@ -18,5 +19,5 @@ export async function handle(req,{config,store,ip='local',agent=new BookingAgent
   if(input.requestId!==undefined&&(typeof input.requestId!=='string'||!uuid.test(input.requestId)))throw new ChatError('Invalid request ID.');
   if(!await store.rate('session:'+input.sessionId,12))throw new ChatError('Please wait a minute before sending more messages.',429);
   return json(await agent.chat({...input,message:input.message.trim(),requestId:input.requestId||crypto.randomUUID()}));
- }catch(error){return json({error:error instanceof ChatError?error.message:'The chat is temporarily unavailable. Please try again later.'},error instanceof ChatError?error.status:503)}
+ }catch(error){return json({...(error.code==='SESSION_EXPIRED'?{code:error.code}:{}),error:error instanceof ChatError?error.message:'The chat is temporarily unavailable. Please try again later.'},error instanceof ChatError?error.status:503)}
 }

@@ -78,7 +78,7 @@ For new requests, final confirmation can only be shown immediately if the webhoo
 
 The Netlify backend uses Netlify Blobs with strong reads and conditional writes, not a temporary local SQLite file. Per-session locks and a persisted submission marker prevent concurrent requests and transport retries from submitting the same booking twice. Ambiguous network failures are never automatically resubmitted. Rate limits apply to sessions, IP hashes, and the site overall. [Netlify Blobs documentation](https://docs.netlify.com/build/data-and-storage/netlify-blobs/).
 
-Chat state expires after seven days of inactivity. A daily scheduled cleanup erases expired session content using conditional tombstones; empty tombstones and hashed rate-limit counters may remain. Browser history expires after six days. This protects against duplicate submission within a retained session, not across unrelated browsers, cleared storage, or deliberately started new appointments.
+Chat state expires after 30 minutes of inactivity by default, configurable with `CHAT_SESSION_TIMEOUT_MINUTES`. A daily scheduled cleanup erases expired session content using conditional tombstones; empty tombstones and hashed rate-limit counters may remain. The browser uses the same inactivity timeout and restores unexpired history on refresh. This protects against duplicate submission within a retained session, not across unrelated browsers, cleared storage, or deliberately started new appointments.
 
 The new domain starts new browser sessions and a new Netlify data store. Existing chat history and submitted-request records in the Sites database are **not migrated**. Check existing appointments on the old site/calendar before initiating the same booking on the new domain. Keep the old site available during transition.
 
@@ -95,7 +95,7 @@ npm run dev
 
 `npm run dev` previews the page only. For local Netlify Functions and Blobs emulation, use Netlify CLI (`npx netlify-cli dev`) with an ignored `.env` file based on `.env.example`. Use your own test webhook when intentionally exercising bookings.
 
-The automated tests use mocked providers and never create appointments. They cover concurrent functions, durable submission markers, rate limiting, retention, and follow-up behavior. The shared scheduling engine also passed the existing 23 regression tests before packaging. A full live Netlify booking remains to be verified after account/environment setup.
+The automated tests use mocked providers and never create appointments. They cover concurrent functions, durable submission markers, rate limiting, retention, and follow-up behavior. The conversational update includes intent, inactivity, retry, identity, and one-contact tests. A full live Netlify booking remains to be verified after account/environment setup.
 
 ## Files to edit later
 
@@ -108,3 +108,31 @@ The automated tests use mocked providers and never create appointments. They cov
 - `netlify/functions/chat.mjs`: same-origin `/api/chat` endpoint.
 
 Changes pushed to the connected GitHub branch will create a new Netlify deployment. Keep all credentials in Netlify's environment settings.
+
+## Conversational booking update
+
+The assistant asks one detail at a time and accepts either a valid email address or phone number. The unused or invalid optional contact field is sent to n8n as JSON null. The existing n8n workflow must tolerate either contact being absent; no workflow changes or real appointment creation were performed for this update.
+
+## Verified calendar confirmation update
+
+With approval, the existing n8n workflow now returns verified Google Calendar event details and accepts a read-only `action: status`. The chat displays the actual start date/time in the returned timezone, keeps the event ID for later checks, and lists verified alternatives if legacy requests match multiple appointments. New booking references distinguish future requests. A specific clock time is required before submitting; PM alone is incomplete. New consultations default to 20 minutes. Status checks never enter the AI booking branch. Calendar verification searches from seven days ago through the next 365 days.
+
+
+## Conversational website assistant (October 2026)
+
+Every new user message goes through server-side OpenAI, including greetings, ordinary questions, and post-booking messages. Transport retries reuse their request receipt. The model receives the latest 40 messages plus durable contact/scheduling state. General chat never calls n8n. Scheduling requires a complete specific date/time, first and last name, explicit booking intent, and **either email or phone**. Submitted requests are persisted before dispatch and never automatically dispatched twice; uncertain transport outcomes remain uncertain.
+
+The existing n8n workflow is unchanged by this update. Its existing `schedule` and read-only `status` actions are reused. Status checks can begin in a new conversation after collecting identity and one contact method. The integration cannot search available slots or modify/cancel appointments; the assistant must explain these limits without claiming it performed those operations.
+
+Configure business knowledge centrally in `server/business.js`, or supply these optional Netlify environment variables:
+
+- `BUSINESS_NAME`, `BUSINESS_DESCRIPTION`, `BUSINESS_SERVICES`
+- `BUSINESS_HOURS`, `BUSINESS_ADDRESS`, `BUSINESS_PHONE`, `BUSINESS_FAQ`
+- `BUSINESS_TIME_ZONE` (default `America/Denver`)
+- `CHAT_SESSION_TIMEOUT_MINUTES` (default `30`; valid range 1–1440)
+
+`OPENAI_API_KEY`, `OPENAI_MODEL`, and `N8N_WEBHOOK_URL` stay server-side. Redeploy after changing environment variables. Business hours, address and phone are deliberately unknown until supplied; the assistant must not invent them.
+
+The widget fetches the public timeout from `GET /api/chat`. `POST /api/chat` remains the chat endpoint. Browser activity is measured from user sends, not page refreshes. On inactivity expiration, the next send starts a new session; an expired pending retry asks the visitor to review their message instead of automatically repeating a booking. The backend independently rejects expired session IDs. Reset creates a new UUID and does not cancel a real calendar appointment. Expiration and reset end duplicate protection for the old conversation; existing appointments should be checked rather than rebooked.
+
+Run `npm test` and `npm run build` before deployment. Provider tests are mocked and never create calendar events. Local Vite preview renders the widget but needs Netlify's function environment for `/api/chat` responses.
