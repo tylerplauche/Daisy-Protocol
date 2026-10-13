@@ -4,7 +4,7 @@ import { Download, Monitor, Laptop, Car } from 'lucide-react';
 const VERSION = '0.1.6';
 const RELEASE_API = `https://api.github.com/repos/tylerplauche/Daisy-Protocol/releases/tags/vehicledesk-v${VERSION}`;
 const platforms = [
-  { name: 'Windows', detail: 'Windows 10 / 11 · 64-bit', file: `VehicleDesk-${VERSION}-Windows-x64.exe`, label: 'Download for Windows', Icon: Monitor },
+  { name: 'Windows', detail: 'Windows 11+ · 64-bit', file: `VehicleDesk-${VERSION}-Windows-x64.exe`, label: 'Download for Windows', Icon: Monitor },
   { name: 'Mac · Apple silicon', detail: 'M1, M2, M3, M4 or newer · macOS 14+', file: `VehicleDesk-${VERSION}-macOS-AppleSilicon.dmg`, label: 'Download for Apple silicon', Icon: Laptop },
   { name: 'Mac · Intel', detail: 'Intel-based Mac · macOS 14+', file: `VehicleDesk-${VERSION}-macOS-Intel.dmg`, label: 'Download for Intel Mac', Icon: Laptop },
 ];
